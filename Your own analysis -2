@@ -1,0 +1,10 @@
+MGI Batch Query 웹 도구
+MGI 공식 웹사이트에서 대량의 RIKEN ID를 공식 심볼로 매핑하는 수작업 방법
+
+2. gene set(유전자 집합) 정보
+공식 gene symbol
+최종적으로는 위 방법들 중에서 변환된 공식 마우스 gene symbol(예: "VPS45", "CRACR2A" 등)만을 사용해
+
+GO enrichment 및 bubble plot 분석을 진행GO term 정보
+GO 분석 및 시각화에는 clusterProfiler 패키지와 org.Mm.eg.db(마우스 공식 annotation DB)를 사용.
+
