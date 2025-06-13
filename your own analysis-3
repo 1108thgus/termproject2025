@@ -1,0 +1,253 @@
+data_s12 <- read.csv("science.adj1979_data_s12.csv")
+data_s12_filtered <- subset(data_s12, X.log10.p.value. >= 1.3)
+
+
+data_s9_filtered <- subset(data_s9, abs(DeltaPsi) >= 0.1 & Probability >= 0.9)
+
+
+
+rikens <- unique(data_s12_filtered$Gene.name)
+symbols <- mapIds(org.Mm.eg.db, keys = rikens, keytype = "ALIAS", column = "SYMBOL")
+# 매핑 결과를 data.frame으로
+symbol_map <- data.frame(Gene.name = names(symbols), SYMBOL = as.character(symbols), stringsAsFactors = FALSE)
+
+# 4. data_s12_filtered에 공식 심볼 추가
+data_s12_mapped <- merge(data_s12_filtered, symbol_map, by = "Gene.name", all.x = TRUE)
+# NA(매핑 안 된) 행 제거
+data_s12_mapped <- subset(data_s12_mapped, !is.na(SYMBOL))
+
+
+
+# 1. data_s9_filtered의 Gene 컬럼(RIKEN ID)을 공식 심볼로 변환
+rikens_s9 <- unique(data_s9_filtered$Gene)
+symbols_s9 <- mapIds(org.Mm.eg.db, 
+                    keys = rikens_s9,
+                    keytype = "ALIAS",
+                    column = "SYMBOL")
+
+# 2. 매핑 결과를 data.frame으로 변환
+symbol_map_s9 <- data.frame(
+  Gene = names(symbols_s9), 
+  SYMBOL_s9 = as.character(symbols_s9),
+  stringsAsFactors = FALSE
+)
+
+# 3. data_s9_filtered에 공식 심볼 추가
+data_s9_mapped <- merge(
+  data_s9_filtered, 
+  symbol_map_s9, 
+  by = "Gene", 
+  all.x = TRUE
+)
+
+# 4. NA 제거 (매핑 실패한 행 제외)
+data_s9_mapped <- subset(data_s9_mapped, !is.na(SYMBOL_s9))
+
+# 5. 컬럼명 통일 (data_s12_mapped의 SYMBOL과 일치시키기)
+colnames(data_s9_mapped)[colnames(data_s9_mapped) == "SYMBOL_s9"] <- "SYMBOL"
+
+
+final_merged <- merge(
+  data_s12_mapped,
+  data_s9_mapped,
+  by = "SYMBOL",
+  all = FALSE  # inner join (교집합만 유지)
+)
+
+# NA 제거
+final_merged <- na.omit(final_merged)
+
+# 숫자형 변환
+final_merged$Log2.fold.enrichmen.Tra2b.vs.Input <- as.numeric(final_merged$Log2.fold.enrichmen.Tra2b.vs.Input)
+final_merged$DeltaPsi <- as.numeric(final_merged$DeltaPsi)
+
+# Rank 계산
+final_merged$Rank <- final_merged$Log2.fold.enrichmen.Tra2b.vs.Input * final_merged$DeltaPsi
+
+
+# GeneID에서 버전 번호(.6 등) 제거
+final_merged$ENSEMBL <- sub("\\..*", "", final_merged$GeneID)
+gene_list <- final_merged$Rank
+names(gene_list) <- final_merged$ENSEMBL  # 버전 없는 Ensembl ID 사용
+gene_list <- na.omit(gene_list)
+gene_list <- sort(gene_list, decreasing = TRUE)
+library(msigdbr)
+mm_geneset <- msigdbr(
+  species = "Mus musculus",
+  category = "C5",
+  subcategory = "BP"
+) %>% 
+  mutate(ensembl_gene = sub("\\..*", "", ensembl_gene))  # 버전 번호 제거
+
+# gene_list와 매칭되는 Ensembl ID만 필터링
+mm_geneset_filtered <- mm_geneset %>% 
+  filter(ensembl_gene %in% names(gene_list))
+
+pathways <- split(mm_geneset_filtered$ensembl_gene, mm_geneset_filtered$gs_name)
+set.seed(123)
+fgsea_res <- fgsea(
+  pathways = pathways,
+  stats = gene_list,
+  minSize = 10,
+  maxSize = 500,
+  eps = 0.0
+)
+
+# 상위 10개 결과 확인
+head(fgsea_res[order(pval), ], 10)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(scales)
+library(grid)
+
+# fgsea_res에서 pathway별 유전자 리스트 추출
+# (fgsea_res는 fgsea 결과 data.table임)
+# final_merged에서 pathway별 평균값 계산
+
+# 1. fgsea_res를 data.frame으로 변환
+fgsea_df <- as.data.frame(fgsea_res)
+
+summary_df2$GeneCount <- summary_df2$size
+
+# pathway별 전체 유전자 리스트 생성
+# msigdbr gene set에서 pathway별 Ensembl ID 리스트 추출
+library(dplyr)
+
+# pathway별 전체 유전자 리스트
+all_pathways <- split(mm_geneset_filtered$ensembl_gene, mm_geneset_filtered$gs_name)
+class(summary_df2$p.adjust)  # "numeric" 또는 "double"이면 OK
+
+summary_df2 <- summary_df2 %>%
+  mutate(p.adjust = padj)
+
+# 1. Description 컬럼 생성 (pathway 컬럼 복사)
+summary_df2$Description <- summary_df2$pathway
+
+# fgsea_res의 padj를 summary_df2에 복사
+summary_df2$p.adjust <- summary_df2$padj
+
+summary_df2 <- summary_df2 %>%
+  rowwise() %>%
+  mutate(
+    Mean_C = mean(final_merged$X.log10.p.value.[final_merged$ENSEMBL %in% AllGenes[[1]]], na.rm = TRUE),
+    Mean_S = mean(final_merged$Probability[final_merged$ENSEMBL %in% AllGenes[[1]]], na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+# summary_df2에 전체 유전자 평균 추가
+summary_df2 <- summary_df2 %>%
+  rowwise() %>%
+  mutate(
+    AllGenes = list(all_pathways[[Description]]),
+    Mean_CLIP_all = mean(final_merged$Log2.fold.enrichmen.Tra2b.vs.Input[final_merged$ENSEMBL %in% AllGenes[[1]]], na.rm = TRUE),
+    Mean_DeltaPsi_all = mean(final_merged$DeltaPsi[final_merged$ENSEMBL %in% AllGenes[[1]]], na.rm = TRUE),
+    GeneCount_all = length(AllGenes[[1]])
+  ) %>%
+  ungroup()
+
+summary_df2_top <- summary_df2 %>% 
+  filter(GeneCount_all >= 5) %>% 
+  arrange(p.adjust) %>% 
+  slice_head(n = 100) %>%
+  mutate(
+    Label = ifelse(
+      row_number() <= 5 |
+        (grepl("immune", Description, ignore.case = TRUE) &
+         !grepl("innate", Description, ignore.case = TRUE)),
+      paste0(Description, " (", GeneCount_all, ")"),
+      ""
+    )
+  ) %>%
+  arrange(-log10(p.adjust)) # 진한 색 버블이 위에 오도록 정렬
+      paste0(
+        Description, " (", GeneCount_all, ")\n",
+        "C=", formatC(Mean_C, format="e", digits=2), " ",
+        "S=", formatC(Mean_S, format="e", digits=2)
+      ),
+      ""
+    )
+  )
+
+
+
+
+# 2. ggplot 코드 수정 (summary_df2 → summary_df2_top)
+ggplot(summary_df2_top, aes(x = Mean_CLIP_all, y = Mean_DeltaPsi_all)) +  # <- 여기 변경!
+  geom_point(
+    aes(size = GeneCount_all, fill = -log10(p.adjust)),
+    color = "NA",  # "NA" → NA로 수정
+    shape = 21,
+    alpha = 0.9
+  ) +
+  scale_fill_gradientn(
+    colours = c("#FFF7BC", "#FEC44F", "#ED6323", "#B22222"),
+breaks = breaks,
+labels = labels,
+limits = c(min_logfdr, max_logfdr),
+name = expression(
+  atop(
+    "Term-specific enrichment confidence (false discovery rate)"
+  )
+),
+guide = guide_colorbar(
+  title.position = "left",
+  title.theme = element_text(angle = 90, vjust = 0.5),
+  barheight = unit(12, "cm"),
+  barwidth = unit(0.8, "cm"),
+  label.position = "right",
+  frame.colour = "black"
+)
+) +
+  scale_size_continuous(range = c(0.1,10), name = "Gene Count", guide="none") +
+  coord_cartesian(xlim = c(1.5, 4), ylim = c(-0.1, 0.3), clip = "off") +
+  geom_label_repel(
+    aes(label = Label),
+    box.padding = 3.5,
+    point.padding = 3,
+    force_pull = 3,
+    force = 3,
+    min.segment.length = 0,
+    arrow = arrow(length = unit(0.015, "npc"), type = "closed"),
+    max.iter = 60000,
+    max.overlaps = Inf,
+    size = 2.5,
+    color = "black",
+    fill = alpha("white", 0.85),
+    fontface = "plain",
+    label.size = 0.2,
+    segment.color = "gray30"
+  ) +
+  labs(
+    x = "TRA2β CLIP Enrichment (log2)",
+    y = expression(Delta*PSI~"(Control - KO)"),
+    title = "Tra2b Binding vs Splicing Change in Major GO Terms",
+    subtitle = "Top significant terms"  # <- 서브타이틀 수정
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.major = element_line(color = "black", linetype = "dashed", linewidth = 0.4),
+    panel.grid.minor = element_line(color = "black", linetype = "dashed", linewidth = 0.4),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 13),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray40", size = 10),
+    axis.title = element_text(face = "plain"),
+    legend.position = "right", plot.margin = margin(10, 25, 25, 40, unit = "pt")
+  ) +
+  annotate("segment", x = 3, xend = 4, y = -0.05, yend = -0.05,
+           arrow = arrow(type = "closed", length = unit(0.2, "inches")),
+           linewidth = 0.8, color = "black") +
+  annotate("segment", x = 3, xend = 2, y = -0.05, yend = -0.05,
+           arrow = arrow(type = "closed", length = unit(0.2, "inches")),
+           linewidth = 0.8, color = "black") +
+  annotate("text", x = 4.05, y = -0.05, label = "Enriched", hjust = 0, size = 4) +
+  annotate("text", x = 1.95, y = -0.05, label = "Depleted", hjust = 1, size = 4) +
+  # y축 annotate
+  annotate("segment", x = 1.8, xend = 1.8, y = 0.1, yend = 0.25,
+           arrow = arrow(type = "closed", length = unit(0.2, "inches")),
+           linewidth = 1, color = "black") +
+  annotate("segment", x = 1.8, xend = 1.8, y = 0.1, yend = 0,
+           arrow = arrow(type = "closed", length = unit(0.2, "inches")),
+           linewidth = 1, color = "black") +
+  annotate("text", x = 1.77, y = 0.27, label = "Elevated", hjust = 0.5, vjust = 0, angle = 90, size = 4) +
+  annotate("text", x = 1.77, y = -0.023, label = "Lowered", hjust = 0.5, vjust = 1, angle = 90, size = 4)
